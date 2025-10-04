@@ -1,7 +1,3 @@
-Nice — got it. Here’s a copy-paste-ready writeup written from your perspective, in the style you asked for, for **TryHackMe - Bricks Heist**. No fluff, no made-up steps, handle included.
-
----
-
 # TryHackMe — Bricks Heist — Writeup
 
 **Author:** `Rat5ak`
